@@ -1,7 +1,125 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'; // comment out while troubleshooting
 
-void main() {
+enum Difficulty { easy, medium, hard }
+
+// Replace with your Supabase project values
+const String SUPABASE_URL = 'https://hcdpwbaaltoxiagnearl.supabase.co';
+const String SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhjZHB3YmFhbHRveGlhZ25lYXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE2Mjc1NjgsImV4cCI6MjA2NzIwMzU2OH0.WFPXrwVPeXfNtpj5jzNLMOrdZ0iPuyWWEs-LRXnisYw';
+
+// Simple AI implemented in this file so the app runs without external ai.dart
+Future<int> chooseAIMove(List<String> board, Difficulty diff, String aiMark) async {
+  final rng = Random();
+  final delayMs = diff == Difficulty.easy
+      ? 150
+      : diff == Difficulty.medium
+          ? 350
+          : 600;
+  await Future.delayed(Duration(milliseconds: delayMs));
+
+  List<int> empties = [];
+  for (var i = 0; i < board.length; i++) {
+    if (board[i] == '') empties.add(i);
+  }
+  if (empties.isEmpty) return 0;
+
+  if (diff == Difficulty.easy) {
+    return empties[rng.nextInt(empties.length)];
+  }
+
+  // helper to convert board to ints (X=1, O=-1, empty=0)
+  List<int> toInts(List<String> b) =>
+      b.map((e) => e == 'X' ? 1 : e == 'O' ? -1 : 0).toList();
+
+  int aiPlayer = aiMark == 'X' ? 1 : -1;
+
+  Map<String, int> minimax(List<int> b, int currentPlayer, int depth, int maxDepth) {
+    int winner() {
+      const lines = [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+        [0, 3, 6],
+        [1, 4, 7],
+        [2, 5, 8],
+        [0, 4, 8],
+        [2, 4, 6],
+      ];
+      for (var ln in lines) {
+        final a = b[ln[0]];
+        final i = b[ln[1]];
+        final c = b[ln[2]];
+        if (a != 0 && a == i && i == c) return a;
+      }
+      return 0;
+    }
+
+    final w = winner();
+    if (w != 0) {
+      if (w == aiPlayer) return {'index': -1, 'score': 10 - depth};
+      return {'index': -1, 'score': depth - 10};
+    }
+    if (!b.contains(0)) return {'index': -1, 'score': 0};
+    if (depth >= maxDepth) return {'index': -1, 'score': 0};
+
+    List<int> available = [];
+    for (var i = 0; i < b.length; i++) if (b[i] == 0) available.add(i);
+
+    // simple ordering: center, corners, sides
+    int posScore(int idx) {
+      if (idx == 4) return 3;
+      if ({0, 2, 6, 8}.contains(idx)) return 2;
+      return 1;
+    }
+
+    available.sort((a, b) => posScore(b).compareTo(posScore(a)));
+
+    int bestIndex = -1;
+    int bestScore = currentPlayer == aiPlayer ? -9999 : 9999;
+
+    for (var idx in available) {
+      final nb = List<int>.from(b);
+      nb[idx] = currentPlayer;
+      final res = minimax(nb, -currentPlayer, depth + 1, maxDepth);
+      final score = res['score']!;
+      if (currentPlayer == aiPlayer) {
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = idx;
+        }
+      } else {
+        if (score < bestScore) {
+          bestScore = score;
+          bestIndex = idx;
+        }
+      }
+    }
+    return {'index': bestIndex, 'score': bestScore};
+  }
+
+  if (diff == Difficulty.medium) {
+    // 30% chance to make a random mistake
+    if (rng.nextDouble() < 0.30) return empties[rng.nextInt(empties.length)];
+    final ints = toInts(board);
+    final res = minimax(ints, aiPlayer, 0, 4);
+    final idx = res['index']!;
+    return idx >= 0 ? idx : empties[rng.nextInt(empties.length)];
+  }
+
+  // hard = perfect play
+  final ints = toInts(board);
+  final res = minimax(ints, aiPlayer, 0, 9);
+  final idx = res['index']!;
+  return idx >= 0 ? idx : empties[rng.nextInt(empties.length)];
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: SUPABASE_URL,
+    anonKey: SUPABASE_ANON_KEY,
+  );
   runApp(MyApp());
 }
 
@@ -19,7 +137,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// Login with animated logo and gradient background
+// Login with Supabase authentication
 class MyHomePage extends StatefulWidget {
   @override
   _MyHomePageState createState() => _MyHomePageState();
@@ -30,6 +148,7 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   late final AnimationController _logoController;
+  bool _loading = false;
 
   @override
   void initState() {
@@ -46,13 +165,38 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     super.dispose();
   }
 
-  void _submit() {
-    if (_formKey.currentState?.validate() ?? false) {
-      final name = _nameController.text.trim();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Welcome, $name')));
+  Future<void> _submit() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final email = _nameController.text.trim();
+    final password = _passwordController.text;
+
+    setState(() => _loading = true);
+
+    try {
+      final supabase = Supabase.instance.client;
+
+      // try sign-in
+      final signInRes = await supabase.auth.signInWithPassword(email: email, password: password);
+      final signedIn = (signInRes.session != null) || (signInRes.user != null);
+
+      if (!signedIn) {
+        // if sign-in gave no session/user, try sign-up
+        final signUpRes = await supabase.auth.signUp(email: email, password: password);
+        final signedUp = (signUpRes.user != null) || (signUpRes.session != null);
+        if (!signedUp) throw Exception('Unable to sign in or sign up. Check Supabase settings.');
+      }
+
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => GamePage(playerName: name)),
+        MaterialPageRoute(builder: (_) => GamePage(playerName: email)),
       );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Auth error: ${e.toString()}')));
+      }
+    } finally {
+      if (!mounted) return;
+      setState(() => _loading = false);
     }
   }
 
@@ -68,81 +212,87 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
         ),
       ),
       child: Center(
-        child: SingleChildScrollView(
-          child: Card(
-            elevation: 18,
-            margin: EdgeInsets.symmetric(horizontal: 20),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Animated circular logo
-                  SizedBox(
-                    height: 110,
-                    width: 110,
-                    child: RotationTransition(
-                      turns: _logoController,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: RadialGradient(colors: [Colors.white, Colors.indigo]),
-                          shape: BoxShape.circle,
-                          boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8)],
-                        ),
-                        child: Center(
-                          child: Text('OX', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.indigo.shade900)),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final double width = constraints.maxWidth.toDouble(); // ensure double
+            return SingleChildScrollView(
+              child: Card(
+                elevation: 18,
+                margin: EdgeInsets.symmetric(horizontal: 20),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Container(
+                  width: width,
+                  padding: EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Animated circular logo
+                      SizedBox(
+                        height: 110,
+                        width: 110,
+                        child: RotationTransition(
+                          turns: _logoController,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: RadialGradient(colors: [Colors.white, Colors.indigo]),
+                              shape: BoxShape.circle,
+                              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8)],
+                            ),
+                            child: Center(
+                              child: Text('OX', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.indigo.shade900)),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  Text('Sign in', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
-                  SizedBox(height: 12),
-                  Form(
-                    key: _formKey,
-                    child: Column(
-                      children: [
-                        TextFormField(
-                          controller: _nameController,
-                          decoration: InputDecoration(
-                            prefixIcon: Icon(Icons.person),
-                            labelText: 'Name',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Enter your name' : null,
-                        ),
-                        SizedBox(height: 12),
-                        TextFormField(
-                          controller: _passwordController,
-                          decoration: InputDecoration(
-                            prefixIcon: Icon(Icons.lock),
-                            labelText: 'Password',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          obscureText: true,
-                          validator: (v) => (v == null || v.isEmpty) ? 'Enter a password' : null,
-                        ),
-                        SizedBox(height: 16),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            icon: Icon(Icons.login),
-                            label: Padding(
-                              padding: EdgeInsets.symmetric(vertical: 12),
-                              child: Text('Login'),
+                      SizedBox(height: 12),
+                      Text('Sign in', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
+                      SizedBox(height: 12),
+                      Form(
+                        key: _formKey,
+                        child: Column(
+                          children: [
+                            TextFormField(
+                              controller: _nameController,
+                              decoration: InputDecoration(
+                                prefixIcon: Icon(Icons.person),
+                                labelText: 'Email',
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              validator: (v) => (v == null || v.trim().isEmpty) ? 'Enter your email' : null,
                             ),
-                            style: ElevatedButton.styleFrom(shape: StadiumBorder()),
-                            onPressed: _submit,
-                          ),
+                            SizedBox(height: 12),
+                            TextFormField(
+                              controller: _passwordController,
+                              decoration: InputDecoration(
+                                prefixIcon: Icon(Icons.lock),
+                                labelText: 'Password',
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              obscureText: true,
+                              validator: (v) => (v == null || v.isEmpty) ? 'Enter a password' : null,
+                            ),
+                            SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                icon: _loading ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : Icon(Icons.login),
+                                label: Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 12),
+                                  child: Text(_loading ? 'Signing in...' : 'Login'),
+                                ),
+                                style: ElevatedButton.styleFrom(shape: StadiumBorder()),
+                                onPressed: _loading ? null : _submit,
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
@@ -165,6 +315,10 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   int _moves = 0;
   List<int>? _winningLine;
 
+  // AI settings
+  Difficulty _difficulty = Difficulty.medium;
+  bool _aiThinking = false;
+
   static const List<List<int>> _winningLines = [
     [0,1,2],
     [3,4,5],
@@ -186,9 +340,45 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
       if (_winner == null && _moves == 9) _winner = 'Draw';
       if (_winner == null) _current = _current == 'X' ? 'O' : 'X';
     });
+
     if (_winner != null) {
       Future.delayed(Duration(milliseconds: 250), () => _showResult());
+      return;
     }
+
+    // If it's now AI's turn, trigger AI
+    if (_current == 'O') {
+      _performAIMove();
+    }
+  }
+
+  void _performAIMove() async {
+    // prevent double AI calls
+    if (_aiThinking) return;
+    _aiThinking = true;
+    setState(() {}); // show spinner
+
+    final aiMark = 'O';
+    final idx = await chooseAIMove(List<String>.from(_board), _difficulty, aiMark);
+
+    // apply move if still valid
+    if (!mounted) return;
+    if (_board[idx] == '' && _winner == null) {
+      setState(() {
+        _board[idx] = aiMark;
+        _moves++;
+        _winner = _checkWinner();
+        if (_winner == null && _moves == 9) _winner = 'Draw';
+        if (_winner == null) _current = _current == 'X' ? 'O' : 'X';
+      });
+
+      if (_winner != null) {
+        Future.delayed(Duration(milliseconds: 250), () => _showResult());
+      }
+    }
+
+    _aiThinking = false;
+    setState(() {});
   }
 
   String? _checkWinner() {
@@ -227,6 +417,7 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
       _winner = null;
       _moves = 0;
       _winningLine = null;
+      _aiThinking = false;
     });
   }
 
@@ -265,71 +456,103 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
             MaterialPageRoute(builder: (_) => MyApp()), (r) => false), tooltip: 'Logout'),
         ],
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(colors: [Colors.cyan.shade50, Colors.white], begin: Alignment.topCenter, end: Alignment.bottomCenter),
-        ),
-        padding: EdgeInsets.symmetric(vertical: 18, horizontal: 12),
-        child: Column(
-          children: [
-            Text('Current: $_current', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            SizedBox(height: 12),
-            AspectRatio(
-              aspectRatio: 1,
-              child: Card(
-                elevation: 12,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: EdgeInsets.all(14),
-                  child: GridView.builder(
-                    physics: NeverScrollableScrollPhysics(),
-                    itemCount: 9,
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3, mainAxisSpacing: 10, crossAxisSpacing: 10),
-                    itemBuilder: (context, index) {
-                      return Material(
-                        color: _cellColor(index),
-                        borderRadius: BorderRadius.circular(8),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () => _handleTap(index),
-                          child: Center(child: _buildMark(_board[index])),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final double maxWidth = constraints.maxWidth.toDouble();
+          final gridSize = maxWidth * 0.9; // grid size relative to maxWidth
+
+          return Container(
+            width: maxWidth,
+            margin: EdgeInsets.symmetric(horizontal: (constraints.maxWidth - maxWidth) / 2),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [Colors.cyan.shade50, Colors.white], begin: Alignment.topCenter, end: Alignment.bottomCenter),
+            ),
+            padding: EdgeInsets.symmetric(vertical: 18, horizontal: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Current: $_current', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                SizedBox(height: 8),
+                // Difficulty selector and AI thinking indicator
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text('AI: '),
+                    DropdownButton<Difficulty>(
+                      value: _difficulty,
+                      onChanged: (v) { if (v != null) setState(() => _difficulty = v); },
+                      items: Difficulty.values.map((d) =>
+                        DropdownMenuItem(value: d, child: Text(d.toString().split('.').last.toUpperCase()))
+                      ).toList(),
+                    ),
+                    SizedBox(width: 12),
+                    if (_aiThinking) Row(children: [SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text('AI thinking...')]),
+                  ],
+                ),
+                SizedBox(height: 12),
+                SizedBox(
+                  width: gridSize,
+                  height: gridSize,
+                  child: Card(
+                    elevation: 12,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: Padding(
+                      padding: EdgeInsets.all(14),
+                      child: GridView.builder(
+                        physics: NeverScrollableScrollPhysics(),
+                        itemCount: 9,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 1,
                         ),
-                      );
-                    },
+                        itemBuilder: (context, index) {
+                          return Material(
+                            color: _cellColor(index),
+                            borderRadius: BorderRadius.circular(8),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () => _handleTap(index),
+                              child: Center(child: _buildMark(_board[index])),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            SizedBox(height: 16),
-            if (_winner != null)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(_winner == 'Draw' ? Icons.sentiment_neutral : Icons.emoji_events, color: Colors.amber),
-                  SizedBox(width: 8),
-                  Text(
-                    _winner == 'Draw' ? 'It\'s a draw' : 'Winner: $_winner',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                SizedBox(height: 16),
+                if (_winner != null)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(_winner == 'Draw' ? Icons.sentiment_neutral : Icons.emoji_events, color: Colors.amber),
+                      SizedBox(width: 8),
+                      Text(
+                        _winner == 'Draw' ? 'It\'s a draw' : 'Winner: $_winner',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            Spacer(),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(onPressed: _reset, icon: Icon(Icons.replay), label: Text('Reset')),
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute(builder: (_) => MyApp()), (r) => false),
-                  icon: Icon(Icons.logout),
-                  label: Text('Logout'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                Spacer(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(onPressed: _reset, icon: Icon(Icons.replay), label: Text('Reset')),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(builder: (_) => MyApp()), (r) => false),
+                      icon: Icon(Icons.logout),
+                      label: Text('Logout'),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
