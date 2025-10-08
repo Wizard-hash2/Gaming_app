@@ -9,7 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  supabase_flutter: ^1.4.0
+  supabase_flutter: ^1.10.25
+  url_launcher: ^6.1.10
 
 dev_dependencies:
   flutter_test:

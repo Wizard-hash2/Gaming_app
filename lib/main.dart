@@ -1,6 +1,8 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // comment out while troubleshooting
+import 'package:url_launcher/url_launcher.dart';
+import 'package:url_launcher/url_launcher_string.dart';
 
 enum Difficulty { easy, medium, hard }
 
@@ -129,8 +131,13 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter TicTacToe',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(primarySwatch: Colors.indigo),
+      theme: ThemeData(
+        primarySwatch: Colors.deepPurple,
+        scaffoldBackgroundColor: Colors.transparent, // let gradient show
+      ),
       home: Scaffold(
+        // Keep a transparent scaffold so the page-level gradients are visible
+        backgroundColor: Colors.transparent,
         body: MyHomePage(),
       ),
     );
@@ -200,15 +207,40 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     }
   }
 
+  Future<void> _openSignUpPage() async {
+    const url = 'https://kenwork.onrender.com/auth';
+    final uri = Uri.parse(url);
+    // Prefer external application to open in a new window/tab
+    try {
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        // fallback: try simple string launcher
+        if (!await launchUrlString(url, webOnlyWindowName: '_blank')) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open signup page')));
+          }
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open signup page')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      // gradient background
+      // updated blue → purple → teal gradient for a modern, visually-appealing look
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [Colors.indigo.shade800, Colors.indigo.shade400, Colors.cyan.shade200],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF0F172A), // deep midnight
+            Color(0xFF4F46E5), // indigo/purple
+            Color(0xFF06B6D4), // teal/cyan accent
+          ],
+          stops: [0.0, 0.55, 1.0],
         ),
       ),
       child: Center(
@@ -284,6 +316,11 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
                                 onPressed: _loading ? null : _submit,
                               ),
                             ),
+                            SizedBox(height: 12),
+                            TextButton(
+                              onPressed: _openSignUpPage,
+                              child: Text('Don\'t have an account? Sign up here', style: TextStyle(color: Colors.blueAccent)),
+                            ),
                           ],
                         ),
                       ),
@@ -319,6 +356,11 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   Difficulty _difficulty = Difficulty.medium;
   bool _aiThinking = false;
 
+  // Scoreboard
+  int _playerWins = 0; // player (X)
+  int _aiWins = 0;     // AI (O)
+  int _draws = 0;
+
   static const List<List<int>> _winningLines = [
     [0,1,2],
     [3,4,5],
@@ -329,6 +371,20 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
     [0,4,8],
     [2,4,6],
   ];
+
+  // Produce 1-2 character initials from a display name or email
+  String _userInitials(String name) {
+    final s = (name ?? '').trim();
+    if (s.isEmpty) return '';
+    // split on space or common separators (for emails use part before @)
+    final beforeAt = s.contains('@') ? s.split('@').first : s;
+    final parts = beforeAt.split(RegExp(r'[\s._-]+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return beforeAt.substring(0, 1).toUpperCase();
+    if (parts.length == 1) return parts[0].substring(0, 1).toUpperCase();
+    final first = parts[0][0];
+    final second = parts[1][0];
+    return (first + second).toUpperCase();
+  }
 
   // small animation for the placed mark
   void _handleTap(int idx) {
@@ -396,6 +452,12 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   }
 
   void _showResult() {
+    // update scoreboard once per finished game
+    setState(() {
+      if (_winner == 'Draw') _draws++;
+      else if (_winner == 'X') _playerWins++;
+      else if (_winner == 'O') _aiWins++;
+    });
     final title = _winner == 'Draw' ? 'Draw' : 'Winner: $_winner';
     showDialog(
       context: context,
@@ -407,6 +469,26 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
           TextButton(onPressed: () { Navigator.of(context).pop(); }, child: Text('Close')),
         ],
       ),
+    );
+  }
+
+  Future<void> _logout() async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.auth.signOut();
+    } catch (e) {
+      // ignore sign-out errors but still navigate
+    }
+    if (!mounted) return;
+    // reset local scores on logout
+    setState(() {
+      _playerWins = 0;
+      _aiWins = 0;
+      _draws = 0;
+    });
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => MyHomePage()),
+      (route) => false,
     );
   }
 
@@ -438,121 +520,195 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      // nice gradient app bar look via flexible space
-      appBar: AppBar(
-        title: Text('Tic-Tac-Toe - ${widget.playerName}'),
-        elevation: 6,
-        flexibleSpace: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(colors: [Colors.indigo, Colors.cyan]),
+  Widget _buildBoard(BuildContext context) {
+    // kept as a safe stub — the build() uses the inline Container/GridView.
+    // You can reimplement a responsive helper here if desired.
+    return SizedBox.shrink();
+  }
+
+  Widget _buildScoreChip(String label, int value, Color color) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Row(
+        children: [
+          Text(label, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          SizedBox(width: 8),
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: color,
+            child: Text(value.toString(), style: TextStyle(fontSize: 12, color: Colors.black)),
           ),
-        ),
-        actions: [
-          IconButton(icon: Icon(Icons.refresh), onPressed: _reset, tooltip: 'Reset'),
-          IconButton(icon: Icon(Icons.logout), onPressed: () => Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => MyApp()), (r) => false), tooltip: 'Logout'),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final double maxWidth = constraints.maxWidth.toDouble();
-          final gridSize = maxWidth * 0.9; // grid size relative to maxWidth
+    );
+  }
 
-          return Container(
-            width: maxWidth,
-            margin: EdgeInsets.symmetric(horizontal: (constraints.maxWidth - maxWidth) / 2),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: [Colors.cyan.shade50, Colors.white], begin: Alignment.topCenter, end: Alignment.bottomCenter),
+  @override
+  Widget build(BuildContext context) {
+    // Show gradient behind the scaffold body and make the AppBar blend with it
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        // avatar + title (avatar shows user initials as a simple cartoon-like badge)
+        title: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: Colors.white,
+              child: Text(
+                _userInitials(widget.playerName),
+                style: TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
+              ),
             ),
-            padding: EdgeInsets.symmetric(vertical: 18, horizontal: 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Tic-Tac-Toe - ${widget.playerName}',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(onPressed: _reset, icon: Icon(Icons.refresh)),
+          IconButton(onPressed: _logout, icon: Icon(Icons.logout)),
+        ],
+        // scoreboard shown under the AppBar title
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(44),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 10.0, left: 12.0, right: 12.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text('Current: $_current', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                SizedBox(height: 8),
-                // Difficulty selector and AI thinking indicator
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text('AI: '),
-                    DropdownButton<Difficulty>(
-                      value: _difficulty,
-                      onChanged: (v) { if (v != null) setState(() => _difficulty = v); },
-                      items: Difficulty.values.map((d) =>
-                        DropdownMenuItem(value: d, child: Text(d.toString().split('.').last.toUpperCase()))
-                      ).toList(),
-                    ),
-                    SizedBox(width: 12),
-                    if (_aiThinking) Row(children: [SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text('AI thinking...')]),
-                  ],
-                ),
-                SizedBox(height: 12),
-                SizedBox(
-                  width: gridSize,
-                  height: gridSize,
-                  child: Card(
-                    elevation: 12,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    child: Padding(
-                      padding: EdgeInsets.all(14),
-                      child: GridView.builder(
-                        physics: NeverScrollableScrollPhysics(),
-                        itemCount: 9,
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          mainAxisSpacing: 10,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 1,
-                        ),
-                        itemBuilder: (context, index) {
-                          return Material(
-                            color: _cellColor(index),
-                            borderRadius: BorderRadius.circular(8),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () => _handleTap(index),
-                              child: Center(child: _buildMark(_board[index])),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16),
-                if (_winner != null)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(_winner == 'Draw' ? Icons.sentiment_neutral : Icons.emoji_events, color: Colors.amber),
-                      SizedBox(width: 8),
-                      Text(
-                        _winner == 'Draw' ? 'It\'s a draw' : 'Winner: $_winner',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                Spacer(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(onPressed: _reset, icon: Icon(Icons.replay), label: Text('Reset')),
-                    ElevatedButton.icon(
-                      onPressed: () => Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(builder: (_) => MyApp()), (r) => false),
-                      icon: Icon(Icons.logout),
-                      label: Text('Logout'),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                    ),
-                  ],
-                ),
+                _buildScoreChip('You', _playerWins, Colors.deepPurpleAccent),
+                SizedBox(width: 12),
+                _buildScoreChip('Draws', _draws, Colors.amber),
+                SizedBox(width: 12),
+                _buildScoreChip('AI', _aiWins, Colors.tealAccent.shade700),
               ],
             ),
-          );
-        },
+          ),
+        ),
+      ),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF4F46E5),
+              Color(0xFF6D28D9),
+              Color(0xFF06B6D4),
+            ],
+            stops: [0.0, 0.55, 1.0],
+          ),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final padding = 32.0;
+            final availableWidth = constraints.maxWidth - padding;
+            final availableHeight = constraints.maxHeight - padding - 120; // reserve header/control space
+            final gridSize = min(availableWidth, availableHeight).clamp(200.0, 1000.0);
+
+            return SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: IntrinsicHeight(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(height: 16),
+                      Center(child: Text('Current: $_current', style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white))),
+                      SizedBox(height: 8),
+                      // AI difficulty selector and status
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text('AI: ', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+                          DropdownButton<Difficulty>(
+                            dropdownColor: Colors.deepPurple.shade700,
+                            value: _difficulty,
+                            items: Difficulty.values
+                                .map((d) => DropdownMenuItem(value: d, child: Text(d.toString().split('.').last.toUpperCase())))
+                                .toList(),
+                            onChanged: (v) {
+                              if (v != null) setState(() => _difficulty = v);
+                            },
+                          ),
+                          if (_aiThinking) ...[
+                            SizedBox(width: 12),
+                            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                          ],
+                        ],
+                      ),
+                      SizedBox(height: 16),
+
+                      // Expand the board to take remaining space (prevents RenderFlex overflow)
+                      Expanded(
+                        child: Center(
+                          child: Container(
+                            width: gridSize,
+                            height: gridSize,
+                            padding: EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.06),
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 12)],
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: GridView.builder(
+                              physics: NeverScrollableScrollPhysics(),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 3,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
+                                childAspectRatio: 1.0,
+                              ),
+                              itemCount: 9,
+                              itemBuilder: (context, index) {
+                                return Material(
+                                  color: _cellColor(index),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(8),
+                                    onTap: () => _handleTap(index),
+                                    child: Semantics(
+                                      label: 'Cell ${index + 1}, ${_board[index] == '' ? 'empty' : _board[index]}',
+                                      button: true,
+                                      child: Center(child: _buildMark(_board[index])),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      SizedBox(height: 18),
+                      if (_winner != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8.0),
+                          child: Center(child: Text('Result: $_winner', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white))),
+                        ),
+                      SizedBox(height: 12),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
